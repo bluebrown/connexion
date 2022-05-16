@@ -23,7 +23,9 @@ class SecurityMiddleware(AppMiddleware):
         self.app = app
         self.apis: t.Dict[str, SecurityAPI] = {}
 
-    def add_api(self, specification: t.Union[pathlib.Path, str, dict], **kwargs) -> None:
+    def add_api(
+        self, specification: t.Union[pathlib.Path, str, dict], **kwargs
+    ) -> None:
         api = SecurityAPI(specification, **kwargs)
         self.apis[api.base_path] = api
 
@@ -33,23 +35,29 @@ class SecurityMiddleware(AppMiddleware):
             return
 
         try:
-            connexion_context = scope['extensions'][ROUTING_CONTEXT]
+            connexion_context = scope["extensions"][ROUTING_CONTEXT]
         except KeyError:
-            raise MissingMiddleware('Could not find routing information in scope. Please make sure '
-                                    'you have a routing middleware registered upstream. ')
+            raise MissingMiddleware(
+                "Could not find routing information in scope. Please make sure "
+                "you have a routing middleware registered upstream. "
+            )
 
-        api_base_path = connexion_context.get('api_base_path')
+        api_base_path = connexion_context.get("api_base_path")
         if api_base_path:
             api = self.apis[api_base_path]
-            operation_id = connexion_context.get('operation_id')
+            operation_id = connexion_context.get("operation_id")
             try:
                 operation = api.operations[operation_id]
             except KeyError as e:
                 if operation_id is None:
-                    logger.debug('Skipping security check for operation without id. Enable '
-                                 '`auth_all_paths` to check security for unknown operations.')
+                    logger.debug(
+                        "Skipping security check for operation without id. Enable "
+                        "`auth_all_paths` to check security for unknown operations."
+                    )
                 else:
-                    raise MissingSecurityOperation('Encountered unknown operation_id.') from e
+                    raise MissingSecurityOperation(
+                        "Encountered unknown operation_id."
+                    ) from e
 
             else:
                 request = MiddlewareRequest(scope)
@@ -59,16 +67,15 @@ class SecurityMiddleware(AppMiddleware):
 
 
 class SecurityAPI(AbstractSpecAPI):
-
     def __init__(
-            self,
-            specification: t.Union[pathlib.Path, str, dict],
-            auth_all_paths: bool = False,
-            *args,
-            **kwargs
+        self,
+        specification: t.Union[pathlib.Path, str, dict],
+        auth_all_paths: bool = False,
+        *args,
+        **kwargs
     ):
         super().__init__(specification, *args, **kwargs)
-        self.security_handler_factory = SecurityHandlerFactory('context')
+        self.security_handler_factory = SecurityHandlerFactory("context")
         self.app_security = self.specification.security
         self.security_schemes = self.specification.security_definitions
 
@@ -85,34 +92,33 @@ class SecurityAPI(AbstractSpecAPI):
         self.operations = defaultdict(lambda: default_operation)
 
     def add_paths(self):
-        paths = self.specification.get('paths', {})
+        paths = self.specification.get("paths", {})
         for path, methods in paths.items():
             for method, operation in methods.items():
                 if method not in METHODS:
                     continue
-                operation_id = operation.get('operationId')
+                operation_id = operation.get("operationId")
                 if operation_id:
                     self.operations[operation_id] = self.make_operation(operation)
 
     def make_operation(self, operation_spec: dict = None):
         security = self.app_security
         if operation_spec:
-            security = operation_spec.get('security', self.app_security)
+            security = operation_spec.get("security", self.app_security)
 
         return SecurityOperation(
             self.security_handler_factory,
             security=security,
-            security_schemes=self.specification.security_definitions
+            security_schemes=self.specification.security_definitions,
         )
 
 
 class SecurityOperation:
-
     def __init__(
-            self,
-            security_handler_factory: SecurityHandlerFactory,
-            security: list,
-            security_schemes: dict
+        self,
+        security_handler_factory: SecurityHandlerFactory,
+        security: list,
+        security_schemes: dict,
     ):
         self.security_handler_factory = security_handler_factory
         self.security = security
@@ -120,7 +126,7 @@ class SecurityOperation:
         self.verification_fn = self._get_verification_fn()
 
     def _get_verification_fn(self):
-        logger.debug('... Security: %s', self.security, extra=vars(self))
+        logger.debug("... Security: %s", self.security, extra=vars(self))
         if not self.security:
             return self.security_handler_factory.security_passthrough
 
@@ -135,89 +141,130 @@ class SecurityOperation:
             for scheme_name, required_scopes in security_req.items():
                 security_scheme = self.security_schemes[scheme_name]
 
-                if security_scheme['type'] == 'oauth2':
+                if security_scheme["type"] == "oauth2":
                     if oauth:
                         logger.warning(
                             "... multiple OAuth2 security schemes in AND fashion not supported",
-                            extra=vars(self))
+                            extra=vars(self),
+                        )
                         break
                     oauth = True
                     token_info_func = self.security_handler_factory.get_tokeninfo_func(
-                        security_scheme)
-                    scope_validate_func = self.security_handler_factory.get_scope_validate_func(
-                        security_scheme)
+                        security_scheme
+                    )
+                    scope_validate_func = (
+                        self.security_handler_factory.get_scope_validate_func(
+                            security_scheme
+                        )
+                    )
                     if not token_info_func:
                         logger.warning("... x-tokenInfoFunc missing", extra=vars(self))
                         break
 
-                    sec_req_funcs[scheme_name] = self.security_handler_factory.verify_oauth(
-                        token_info_func, scope_validate_func, required_scopes)
+                    sec_req_funcs[
+                        scheme_name
+                    ] = self.security_handler_factory.verify_oauth(
+                        token_info_func, scope_validate_func, required_scopes
+                    )
 
                 # Swagger 2.0
-                elif security_scheme['type'] == 'basic':
+                elif security_scheme["type"] == "basic":
                     basic_info_func = self.security_handler_factory.get_basicinfo_func(
-                        security_scheme)
+                        security_scheme
+                    )
                     if not basic_info_func:
                         logger.warning("... x-basicInfoFunc missing", extra=vars(self))
                         break
 
-                    sec_req_funcs[scheme_name] = self.security_handler_factory.verify_basic(
-                        basic_info_func)
+                    sec_req_funcs[
+                        scheme_name
+                    ] = self.security_handler_factory.verify_basic(basic_info_func)
 
                 # OpenAPI 3.0.0
-                elif security_scheme['type'] == 'http':
-                    scheme = security_scheme['scheme'].lower()
-                    if scheme == 'basic':
-                        basic_info_func = self.security_handler_factory.get_basicinfo_func(
-                            security_scheme)
+                elif security_scheme["type"] == "http":
+                    scheme = security_scheme["scheme"].lower()
+                    if scheme == "basic":
+                        basic_info_func = (
+                            self.security_handler_factory.get_basicinfo_func(
+                                security_scheme
+                            )
+                        )
                         if not basic_info_func:
-                            logger.warning("... x-basicInfoFunc missing", extra=vars(self))
+                            logger.warning(
+                                "... x-basicInfoFunc missing", extra=vars(self)
+                            )
                             break
 
                         sec_req_funcs[
-                            scheme_name] = self.security_handler_factory.verify_basic(
-                            basic_info_func)
-                    elif scheme == 'bearer':
-                        bearer_info_func = self.security_handler_factory.get_bearerinfo_func(
-                            security_scheme)
+                            scheme_name
+                        ] = self.security_handler_factory.verify_basic(basic_info_func)
+                    elif scheme == "bearer":
+                        bearer_info_func = (
+                            self.security_handler_factory.get_bearerinfo_func(
+                                security_scheme
+                            )
+                        )
                         if not bearer_info_func:
-                            logger.warning("... x-bearerInfoFunc missing", extra=vars(self))
+                            logger.warning(
+                                "... x-bearerInfoFunc missing", extra=vars(self)
+                            )
                             break
                         sec_req_funcs[
-                            scheme_name] = self.security_handler_factory.verify_bearer(
-                            bearer_info_func)
+                            scheme_name
+                        ] = self.security_handler_factory.verify_bearer(
+                            bearer_info_func
+                        )
                     else:
-                        logger.warning("... Unsupported http authorization scheme %s" % scheme,
-                                       extra=vars(self))
+                        logger.warning(
+                            "... Unsupported http authorization scheme %s" % scheme,
+                            extra=vars(self),
+                        )
                         break
 
-                elif security_scheme['type'] == 'apiKey':
-                    scheme = security_scheme.get('x-authentication-scheme', '').lower()
-                    if scheme == 'bearer':
-                        bearer_info_func = self.security_handler_factory.get_bearerinfo_func(
-                            security_scheme)
+                elif security_scheme["type"] == "apiKey":
+                    scheme = security_scheme.get("x-authentication-scheme", "").lower()
+                    if scheme == "bearer":
+                        bearer_info_func = (
+                            self.security_handler_factory.get_bearerinfo_func(
+                                security_scheme
+                            )
+                        )
                         if not bearer_info_func:
-                            logger.warning("... x-bearerInfoFunc missing", extra=vars(self))
+                            logger.warning(
+                                "... x-bearerInfoFunc missing", extra=vars(self)
+                            )
                             break
                         sec_req_funcs[
-                            scheme_name] = self.security_handler_factory.verify_bearer(
-                            bearer_info_func)
+                            scheme_name
+                        ] = self.security_handler_factory.verify_bearer(
+                            bearer_info_func
+                        )
                     else:
-                        apikey_info_func = self.security_handler_factory.get_apikeyinfo_func(
-                            security_scheme)
+                        apikey_info_func = (
+                            self.security_handler_factory.get_apikeyinfo_func(
+                                security_scheme
+                            )
+                        )
                         if not apikey_info_func:
-                            logger.warning("... x-apikeyInfoFunc missing", extra=vars(self))
+                            logger.warning(
+                                "... x-apikeyInfoFunc missing", extra=vars(self)
+                            )
                             break
 
                         sec_req_funcs[
-                            scheme_name] = self.security_handler_factory.verify_api_key(
-                            apikey_info_func, security_scheme['in'], security_scheme['name']
+                            scheme_name
+                        ] = self.security_handler_factory.verify_api_key(
+                            apikey_info_func,
+                            security_scheme["in"],
+                            security_scheme["name"],
                         )
 
                 else:
                     logger.warning(
-                        "... Unsupported security scheme type %s" % security_scheme['type'],
-                        extra=vars(self))
+                        "... Unsupported security scheme type %s"
+                        % security_scheme["type"],
+                        extra=vars(self),
+                    )
                     break
             else:
                 # No break encountered: no missing funcs
@@ -226,7 +273,10 @@ class SecurityOperation:
                     auth_funcs.append(func)
                 else:
                     auth_funcs.append(
-                        self.security_handler_factory.verify_multiple_schemes(sec_req_funcs))
+                        self.security_handler_factory.verify_multiple_schemes(
+                            sec_req_funcs
+                        )
+                    )
 
         return self.security_handler_factory.verify_security(auth_funcs)
 
